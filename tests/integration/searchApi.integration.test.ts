@@ -4,6 +4,7 @@ import { Server } from 'http';
 import { createApp } from '../../src/app.js';
 import { PageStore } from '../../src/db/pageStore.js';
 import { SearchIndexer } from '../../src/search/indexer.js';
+import { UnconfiguredEmbeddingProvider } from '../../src/embeddings/providers/unconfiguredProvider.js';
 
 const MONGO_URI = process.env.MONGODB_URI ?? 'mongodb://localhost:27017';
 const TEST_DB = 'crawlforge_test_search_api';
@@ -26,7 +27,7 @@ beforeAll(async () => {
   indexer = new SearchIndexer(db);
   await indexer.init();
 
-  const app = createApp(db);
+  const app = createApp(db, new UnconfiguredEmbeddingProvider());
 
   await new Promise<void>(resolve => {
     server = app.listen(0, () => {
