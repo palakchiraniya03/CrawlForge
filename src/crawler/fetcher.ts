@@ -173,12 +173,15 @@ async function attemptFetch(
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), options.timeoutMs);
 
-    let response: Response;
     try {
       const defaultAccept = 'text/html,application/xhtml+xml;q=0.9';
-      const accept = options.acceptHeader ?? (options.allowedContentTypes ? options.allowedContentTypes.join(',') : defaultAccept);
+      const accept = options.acceptHeader ?? (
+        options.allowedContentTypes
+          ? options.allowedContentTypes.join(',')
+          : defaultAccept
+      );
 
-      response = await fetch(currentUrl, {
+      const response = await fetch(currentUrl, {
         method: 'GET',
         redirect: 'manual', // We handle redirects ourselves
         signal: controller.signal,
@@ -190,9 +193,138 @@ async function attemptFetch(
           ...(options.lastModified ? { 'If-Modified-Since': options.lastModified } : {}),
         },
       });
+
+      // Handle redirects (exclude 304 Not Modified, which is not a redirect)
+      if (
+        response.status >= 300 &&
+        response.status < 400 &&
+        response.status !== 304
+      ) {
+        const location = response.headers.get('location');
+        if (!location) {
+          return {
+            status: 'network_error',
+            url: currentUrl,
+            originalUrl: startUrl,
+            redirectChain,
+            attempts: 1,
+            error: `Redirect ${response.status} with no Location header`,
+          };
+        }
+
+        let redirectUrl: string;
+        try {
+          redirectUrl = new URL(location, currentUrl).toString();
+        } catch {
+          return {
+            status: 'network_error',
+            url: currentUrl,
+            originalUrl: startUrl,
+            redirectChain,
+            attempts: 1,
+            error: `Invalid redirect location: ${location}`,
+          };
+        }
+
+        // SSRF check on redirect destination before following
+        const redirectCheck = await checkUrlSafe(redirectUrl);
+        if (!redirectCheck.safe) {
+          return {
+            status: 'ssrf_blocked',
+            url: redirectUrl,
+            originalUrl: startUrl,
+            redirectChain,
+            attempts: 1,
+            error: `Redirect to unsafe destination: ${redirectCheck.reason}`,
+          };
+        }
+
+        redirectChain.push(currentUrl);
+        currentUrl = redirectUrl;
+        continue;
+      }
+
+      // Non-redirect response
+      const httpStatus = response.status;
+      const rawEtag = response.headers.get('etag');
+      const etag = rawEtag && rawEtag.trim() ? rawEtag.trim() : undefined;
+      const rawLastModified = response.headers.get('last-modified');
+      const lastModified = rawLastModified && rawLastModified.trim()
+        ? rawLastModified.trim()
+        : undefined;
+
+      // Handle 304 Not Modified (conditional GET success)
+      if (httpStatus === 304) {
+        return {
+          status: 'ok',
+          url: currentUrl,
+          originalUrl: startUrl,
+          httpStatus: 304,
+          notModified: true,
+          etag,
+          lastModified,
+          redirectChain,
+          attempts: 1,
+        };
+      }
+
+      if (httpStatus < 200 || httpStatus >= 300) {
+        return {
+          status: 'http_error',
+          url: currentUrl,
+          originalUrl: startUrl,
+          httpStatus,
+          redirectChain,
+          attempts: 1,
+          error: `HTTP ${httpStatus}`,
+        };
+      }
+
+      // Check content type
+      const rawContentType = response.headers.get('content-type') ?? '';
+      const contentType = rawContentType.split(';')[0].trim().toLowerCase();
+      const supportedTypes = options.allowedContentTypes ?? SUPPORTED_CONTENT_TYPES;
+
+      if (!supportedTypes.includes(contentType)) {
+        // Drain body to free connection
+        try {
+          await response.body?.cancel();
+        } catch {
+          // Ignore cancellation errors.
+        }
+
+        return {
+          status: 'unsupported_content_type',
+          url: currentUrl,
+          originalUrl: startUrl,
+          httpStatus,
+          contentType: rawContentType,
+          redirectChain,
+          attempts: 1,
+          error: `Unsupported content type: ${rawContentType}`,
+        };
+      }
+
+      // Keep the timeout active until the entire response body has been read.
+      const body = await readBodyWithLimit(response, MAX_BODY_BYTES);
+
+      return {
+        status: 'ok',
+        url: currentUrl,
+        originalUrl: startUrl,
+        httpStatus,
+        contentType: rawContentType,
+        body,
+        etag,
+        lastModified,
+        notModified: false,
+        redirectChain,
+        attempts: 1,
+      };
     } catch (err) {
-      clearTimeout(timer);
-      if (isAbortError(err)) {
+      // Depending on the runtime, aborting while reading the body may surface
+      // as an AbortError or as a different error after the signal is aborted.
+      if (isAbortError(err) || controller.signal.aborted) {
         return {
           status: 'timeout',
           url: currentUrl,
@@ -202,6 +334,7 @@ async function attemptFetch(
           error: `Request timed out after ${options.timeoutMs}ms`,
         };
       }
+
       return {
         status: 'network_error',
         url: currentUrl,
@@ -213,124 +346,6 @@ async function attemptFetch(
     } finally {
       clearTimeout(timer);
     }
-
-    // Handle redirects (exclude 304 Not Modified, which is not a redirect)
-    if (response.status >= 300 && response.status < 400 && response.status !== 304) {
-      const location = response.headers.get('location');
-      if (!location) {
-        return {
-          status: 'network_error',
-          url: currentUrl,
-          originalUrl: startUrl,
-          redirectChain,
-          attempts: 1,
-          error: `Redirect ${response.status} with no Location header`,
-        };
-      }
-
-      // Resolve the redirect target against the current URL
-      let redirectUrl: string;
-      try {
-        redirectUrl = new URL(location, currentUrl).toString();
-      } catch {
-        return {
-          status: 'network_error',
-          url: currentUrl,
-          originalUrl: startUrl,
-          redirectChain,
-          attempts: 1,
-          error: `Invalid redirect location: ${location}`,
-        };
-      }
-
-      // SSRF check on redirect destination before following
-      const redirectCheck = await checkUrlSafe(redirectUrl);
-      if (!redirectCheck.safe) {
-        return {
-          status: 'ssrf_blocked',
-          url: redirectUrl,
-          originalUrl: startUrl,
-          redirectChain,
-          attempts: 1,
-          error: `Redirect to unsafe destination: ${redirectCheck.reason}`,
-        };
-      }
-
-      redirectChain.push(currentUrl);
-      currentUrl = redirectUrl;
-      continue; // Follow the redirect
-    }
-
-    // Non-redirect response
-    const httpStatus = response.status;
-    const rawEtag = response.headers.get('etag');
-    const etag = rawEtag && rawEtag.trim() ? rawEtag.trim() : undefined;
-    const rawLastModified = response.headers.get('last-modified');
-    const lastModified = rawLastModified && rawLastModified.trim() ? rawLastModified.trim() : undefined;
-
-    // Handle 304 Not Modified (conditional GET success)
-    if (httpStatus === 304) {
-      return {
-        status: 'ok',
-        url: currentUrl,
-        originalUrl: startUrl,
-        httpStatus: 304,
-        notModified: true,
-        etag,
-        lastModified,
-        redirectChain,
-        attempts: 1,
-      };
-    }
-
-    if (httpStatus < 200 || httpStatus >= 300) {
-      return {
-        status: 'http_error',
-        url: currentUrl,
-        originalUrl: startUrl,
-        httpStatus,
-        redirectChain,
-        attempts: 1,
-        error: `HTTP ${httpStatus}`,
-      };
-    }
-
-    // Check content type
-    const rawContentType = response.headers.get('content-type') ?? '';
-    const contentType = rawContentType.split(';')[0].trim().toLowerCase();
-    const supportedTypes = options.allowedContentTypes ?? SUPPORTED_CONTENT_TYPES;
-
-    if (!supportedTypes.includes(contentType)) {
-      // Drain body to free connection
-      try { await response.body?.cancel(); } catch { /* ignore */ }
-      return {
-        status: 'unsupported_content_type',
-        url: currentUrl,
-        originalUrl: startUrl,
-        httpStatus,
-        contentType: rawContentType,
-        redirectChain,
-        attempts: 1,
-        error: `Unsupported content type: ${rawContentType}`,
-      };
-    }
-
-    // Read body with size limit
-    const body = await readBodyWithLimit(response, MAX_BODY_BYTES);
-
-    return {
-      status: 'ok',
-      url: currentUrl,
-      originalUrl: startUrl,
-      httpStatus,
-      contentType: rawContentType,
-      body,
-      etag,
-      lastModified,
-      notModified: false,
-      redirectChain,
-      attempts: 1,
-    };
   }
 
   // Unreachable

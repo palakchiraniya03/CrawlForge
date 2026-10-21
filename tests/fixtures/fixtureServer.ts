@@ -156,6 +156,19 @@ export function startFixtureServer(): Promise<FixtureServer> {
         return;
       }
 
+      // Special: /slow-body — sends headers and initial chunk, then stalls
+      if (path === '/slow-body') {
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.write('<!DOCTYPE html><html><body><p>initial chunk');
+        const timer = setTimeout(() => {
+          res.end('</p></body></html>');
+        }, 30_000);
+        const cleanup = () => clearTimeout(timer);
+        res.on('close', cleanup);
+        req.on('close', cleanup);
+        return;
+      }
+
       const port = (server.address() as { port: number }).port;
       const defaultRoutes = makeRoutes(port);
       const route = customRoutes.get(path) ?? defaultRoutes.get(path);

@@ -119,6 +119,14 @@ describe('safeFetch — timeout', () => {
     });
     expect(result.status).toBe('timeout');
   }, 5000);
+
+  it('times out when body delivery stalls after response headers', async () => {
+    const result = await safeFetch(`${fixture.baseUrl}/slow-body`, {
+      timeoutMs: 200,
+      maxRetries: 0,
+    });
+    expect(result.status).toBe('timeout');
+  }, 5000);
 });
 
 describe('safeFetch — retry behavior', () => {
