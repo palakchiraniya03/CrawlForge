@@ -50,6 +50,12 @@ describe('normalizeUrl', () => {
     expect(r.valid).toBe(false);
   });
 
+  it('rejects URLs with embedded credentials', () => {
+    const r = normalizeUrl('http://user:pass@example.com/page');
+    expect(r.valid).toBe(false);
+    expect(r.error).toMatch(/credentials/i);
+  });
+
   it('rejects invalid URLs', () => {
     const r = normalizeUrl('not-a-url');
     expect(r.valid).toBe(false);

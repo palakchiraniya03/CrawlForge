@@ -25,6 +25,11 @@ export function normalizeUrl(rawUrl: string, base?: string): NormalizeResult {
       return { normalized: '', valid: false, error: `Unsupported protocol: ${url.protocol}` };
     }
 
+    // Disallow credentials
+    if (url.username || url.password) {
+      return { normalized: '', valid: false, error: 'URLs with embedded credentials are not supported' };
+    }
+
     // Remove default ports
     if ((url.protocol === 'http:' && url.port === '80') ||
         (url.protocol === 'https:' && url.port === '443')) {
