@@ -10,7 +10,10 @@
     "dev": "tsx src/server.ts",
     "index": "tsx scripts/indexPages.ts",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "smoke:e2e": "tsx scripts/e2eSmokeTest.ts",
+    "smoke:embeddings": "tsx scripts/realEmbeddingSmokeTest.ts",
+    "smoke:search": "tsx scripts/realSemanticSearchSmokeTest.ts"
   },
   "keywords": [],
   "author": "",
