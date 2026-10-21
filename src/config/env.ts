@@ -26,4 +26,9 @@ export const config = {
     endpoint: process.env.EMBEDDING_ENDPOINT ?? 'http://localhost:11434/api/embeddings',
     model: process.env.EMBEDDING_MODEL ?? 'all-minilm',
   },
+  browser: {
+    navigationTimeoutMs: parseInt(process.env.BROWSER_NAV_TIMEOUT_MS ?? '10000', 10),
+    actionTimeoutMs: parseInt(process.env.BROWSER_ACTION_TIMEOUT_MS ?? '5000', 10),
+    maxTextLength: parseInt(process.env.BROWSER_MAX_TEXT_LENGTH ?? '10000', 10),
+  },
 } as const;

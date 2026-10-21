@@ -2,9 +2,15 @@ import express, { Request, Response, NextFunction } from 'express';
 import type { Db } from 'mongodb';
 import { getDb } from './db/client.js';
 import { createSearchRouter } from './api/searchRouter.js';
+import { createBrowserRouter } from './api/browserRouter.js';
 import type { EmbeddingProvider } from './embeddings/types.js';
+import { BrowserService } from './browser/browserService.js';
 
-export function createApp(customDb?: Db, customProvider?: EmbeddingProvider) {
+export function createApp(
+  customDb?: Db,
+  customProvider?: EmbeddingProvider,
+  customBrowserService?: BrowserService,
+) {
   const app = express();
   app.use(express.json());
 
@@ -34,6 +40,9 @@ export function createApp(customDb?: Db, customProvider?: EmbeddingProvider) {
   // Mount Search and Indexing API router under /api
   const dbGetter = () => customDb ?? getDb();
   app.use('/api', createSearchRouter(dbGetter, customProvider));
+
+  // Mount Browser Automation API router under /api/browser
+  app.use('/api/browser', createBrowserRouter(customBrowserService));
 
   // 404 handler
   app.use((_req: Request, res: Response) => {

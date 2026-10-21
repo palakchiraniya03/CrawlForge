@@ -13,6 +13,7 @@ CrawlForge consists of five integrated milestones:
 3. **Persistent Page Storage & Versioning**: Content-hashed document store (`pages` and `page_versions`), conditional HTTP requests (`ETag` / `If-None-Match`, `Last-Modified` / `If-Modified-Since`), HTTP 304 handling without data loss, and optimistic concurrency control for concurrent recrawls.
 4. **Lexical Search Engine (BM25)**: Inverted index (`inverted_index`, `indexed_pages`), tokenizer with stop-word filtering, BM25 Robertson–Spärck Jones ranking with title boosting, deterministic URL tie-breaking, and keyword snippet extraction.
 5. **Semantic Search & Hybrid Retrieval**: Dedicated vector embedding storage (`page_embeddings`), cosine similarity scoring, Reciprocal Rank Fusion (RRF) for hybrid ranking, stale embedding detection, and pluggable provider architecture (Ollama / LocalAI / offline test provider).
+6. **Browser Automation Foundation**: Headless Playwright Chromium integration for structured page inspection, visible element extraction, and unambiguous action execution (`click` and `fill`) with strict SSRF request interception and safety boundaries.
 
 ```
                       +-----------------------------+
@@ -253,6 +254,77 @@ curl http://localhost:3000/api/index/stats
 
 ---
 
+### Browser Automation API (Milestone 6)
+
+#### Browser Binary Setup
+If Playwright Chromium binaries are not yet installed on the machine, run:
+```bash
+npx playwright install chromium
+```
+*Note: CrawlForge will never silently download browser binaries during server startup or execution. If the binary is missing, endpoints fail closed with HTTP 503 explaining the exact install command.*
+
+#### `POST /api/browser/inspect`
+Inspect a web page using headless Chromium, extracting visible page content, accessible links, and buttons.
+
+```bash
+curl -X POST http://localhost:3000/api/browser/inspect \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://example.com"}'
+```
+
+**Response Format:**
+```json
+{
+  "status": "ok",
+  "data": {
+    "url": "https://example.com/",
+    "title": "Example Domain",
+    "textContent": "Example Domain This domain is for use in illustrative examples in documents...",
+    "links": [
+      { "text": "More information...", "href": "https://www.iana.org/domains/example" }
+    ],
+    "buttons": []
+  }
+}
+```
+
+#### `POST /api/browser/action`
+Execute a single, explicitly requested browser action (`click` or `fill`). Requires an unambiguous target label.
+
+```bash
+# Click a button or link by explicit label
+curl -X POST http://localhost:3000/api/browser/action \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://example.com",
+    "action": {
+      "type": "click",
+      "label": "More information..."
+    }
+  }'
+
+# Fill an input field by accessible label without submitting
+curl -X POST http://localhost:3000/api/browser/action \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "http://localhost:3000/contact",
+    "action": {
+      "type": "fill",
+      "label": "Your Name",
+      "value": "Alice Doe"
+    }
+  }'
+```
+
+#### Browser Automation Safety Model
+- **SSRF Request Interception**: Playwright routes intercept all outgoing HTTP/HTTPS requests (including subresources and 30x redirects). Requests targeting loopback, RFC 1918, link-local, cloud metadata, or private IP ranges are aborted with `blockedbyclient`.
+- **No Automatic Submission**: `fill` actions modify the input value without dispatching form submissions or Enter keys.
+- **Ambiguous Target Guard**: If more than one visible element matches a label, the action fails closed with an informative error rather than guessing.
+- **Resource Lifecycle**: Browser contexts and child processes are unconditionally closed in `finally` blocks.
+- **No Arbitrary Code Execution**: No user-supplied JavaScript is executed; page content is treated strictly as untrusted data.
+
+---
+
 ## CLI Utilities
 
 Generate or backfill embeddings directly from the command line:
@@ -272,7 +344,7 @@ npx tsx scripts/generateEmbeddings.ts --force
 
 ## Testing & Verification
 
-Run the comprehensive automated test suite (222 unit and integration tests):
+Run the comprehensive automated test suite (250 unit and integration tests):
 
 ```bash
 # Run all tests
