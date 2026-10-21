@@ -196,6 +196,47 @@ describe('Frontier.isKnown', () => {
   });
 });
 
+describe('Frontier.markRobotsBlocked', () => {
+  it('marks job as robots_blocked and removes it from claim queue permanently', async () => {
+    await frontier.addUrl('http://localhost:3001/disallowed', 0);
+    const job = await frontier.claimNext();
+    expect(job).not.toBeNull();
+
+    await frontier.markRobotsBlocked('http://localhost:3001/disallowed', 'Disallowed by robots.txt');
+
+    const docs = await frontier.listByStatus('robots_blocked');
+    expect(docs).toHaveLength(1);
+    expect(docs[0].status).toBe('robots_blocked');
+    expect(docs[0].error_message).toBe('Disallowed by robots.txt');
+    expect(docs[0].last_crawled_at).toBeInstanceOf(Date);
+
+    // Verify it is NOT retried or re-claimed
+    const nextJob = await frontier.claimNext();
+    expect(nextJob).toBeNull();
+  });
+});
+
+describe('Frontier.claimNext with origin filter', () => {
+  it('claims only jobs matching the requested origin', async () => {
+    // Port numbers distinguish origins on localhost
+    await frontier.addUrl('http://localhost:3001/page-1', 0);
+    await frontier.addUrl('http://localhost:3002/page-2', 0);
+
+    const job3002 = await frontier.claimNext('http://localhost:3002');
+    expect(job3002).not.toBeNull();
+    expect(job3002!.url).toBe('http://localhost:3002/page-2');
+
+    // Next claim for 3002 should be empty
+    const empty3002 = await frontier.claimNext('http://localhost:3002');
+    expect(empty3002).toBeNull();
+
+    // 3001 is still pending
+    const job3001 = await frontier.claimNext('http://localhost:3001');
+    expect(job3001).not.toBeNull();
+    expect(job3001!.url).toBe('http://localhost:3001/page-1');
+  });
+});
+
 describe('Frontier.getStats', () => {
   it('returns correct counts per status', async () => {
     await frontier.addUrl('http://localhost:3001/p1', 0);
@@ -206,5 +247,29 @@ describe('Frontier.getStats', () => {
     const stats = await frontier.getStats();
     expect(stats['pending']).toBe(2);
     expect(stats['claimed']).toBe(1);
+  });
+
+  it('filters stats by origin vs returning global collection totals', async () => {
+    await frontier.addUrl('http://localhost:3001/a', 0);
+    await frontier.addUrl('http://localhost:3001/b', 0);
+    await frontier.addUrl('http://localhost:3002/c', 0);
+
+    // Global totals: 3 pending
+    const globalStats = await frontier.getStats();
+    expect(globalStats['pending']).toBe(3);
+
+    // Scoped to 3001: 2 pending
+    const scoped3001 = await frontier.getStats('http://localhost:3001');
+    expect(scoped3001['pending']).toBe(2);
+
+    // Scoped to 3002: 1 pending
+    const scoped3002 = await frontier.getStats('http://localhost:3002');
+    expect(scoped3002['pending']).toBe(1);
+
+    // Detailed stats include scope metadata
+    const detailed = await frontier.getDetailedStats('http://localhost:3001');
+    expect(detailed.scope).toBe('origin');
+    expect(detailed.origin).toBe('http://localhost:3001');
+    expect(detailed.total).toBe(2);
   });
 });

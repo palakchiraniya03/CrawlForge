@@ -22,10 +22,19 @@ import ipaddr from 'ipaddr.js';
  * SSRF IP-range check. Intended ONLY for local development and testing
  * (e.g. "localhost" to allow the local fixture server).
  *
- * WARNING: Never set this in production. An empty value (the default) means
- * no bypass is active and all hosts are subject to full SSRF checking.
+ * SAFETY INVARIANTS:
+ * 1. In production (NODE_ENV === 'production'), this bypass is unconditionally disabled.
+ * 2. It only matches exact literal hostnames in the set (e.g. 'localhost').
+ *    It does NOT bypass raw IP literals (e.g. 127.0.0.1, 169.254.169.254, 192.168.x.x),
+ *    which are still rejected by isIpSafe.
+ * 3. Default is an empty set (fail-closed).
  */
 function getAllowedHosts(): Set<string> {
+  // Hard disable in production regardless of environment configuration
+  if (process.env.NODE_ENV === 'production') {
+    return new Set();
+  }
+
   const raw = process.env.SSRF_ALLOWED_HOSTS ?? '';
   if (!raw.trim()) return new Set();
   return new Set(raw.split(',').map(h => h.trim().toLowerCase()).filter(Boolean));

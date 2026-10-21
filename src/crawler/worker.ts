@@ -36,16 +36,22 @@ export interface CrawlJobResult {
 export class CrawlerWorker {
   private pacer: HostPacer;
 
-  constructor(private readonly frontier: Frontier) {
+  constructor(
+    private readonly frontier: Frontier,
+    private readonly defaultOrigin?: string,
+  ) {
     this.pacer = new HostPacer(config.crawl.delayMs);
   }
 
   /**
    * Process one URL from the frontier.
    * Returns null if there is no work available.
+   *
+   * @param origin - Optional origin filter to scope job claiming to a specific target origin.
    */
-  async processNext(): Promise<CrawlJobResult | null> {
-    const job = await this.frontier.claimNext();
+  async processNext(origin?: string): Promise<CrawlJobResult | null> {
+    const targetOrigin = origin ?? this.defaultOrigin;
+    const job = await this.frontier.claimNext(targetOrigin);
     if (!job) return null;
 
     const url = job.url;
@@ -72,7 +78,7 @@ export class CrawlerWorker {
     // Check robots.txt (conservative: deny on error)
     const robotsAllowed = await isAllowedByRobots(url);
     if (!robotsAllowed) {
-      await this.frontier.markFailed(url, 'Disallowed by robots.txt', undefined);
+      await this.frontier.markRobotsBlocked(url, 'Disallowed by robots.txt');
       return { url, status: 'robots_blocked', linksEnqueued: 0, error: 'Blocked by robots.txt' };
     }
 

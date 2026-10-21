@@ -169,3 +169,32 @@ describe('checkUrlSafe — URL-level checks', () => {
     expect(result.safe).toBe(false);
   });
 });
+
+describe('SSRF_ALLOWED_HOSTS production safety guarantees', () => {
+  const originalNodeEnv = process.env.NODE_ENV;
+  const originalSsrfHosts = process.env.SSRF_ALLOWED_HOSTS;
+
+  afterEach(() => {
+    process.env.NODE_ENV = originalNodeEnv;
+    process.env.SSRF_ALLOWED_HOSTS = originalSsrfHosts;
+  });
+
+  it('unconditionally blocks localhost in production even if SSRF_ALLOWED_HOSTS is set', async () => {
+    process.env.NODE_ENV = 'production';
+    process.env.SSRF_ALLOWED_HOSTS = 'localhost';
+
+    const result = await checkUrlSafe('http://localhost/admin');
+    expect(result.safe).toBe(false);
+  });
+
+  it('does NOT allow IP literals (127.0.0.1, 169.254.169.254) even when localhost is in SSRF_ALLOWED_HOSTS', async () => {
+    delete process.env.NODE_ENV;
+    process.env.SSRF_ALLOWED_HOSTS = 'localhost';
+
+    const loopback = await checkUrlSafe('http://127.0.0.1/');
+    expect(loopback.safe).toBe(false);
+
+    const metadata = await checkUrlSafe('http://169.254.169.254/');
+    expect(metadata.safe).toBe(false);
+  });
+});

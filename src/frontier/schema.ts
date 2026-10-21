@@ -7,8 +7,9 @@
  * The state machine is:
  *
  *   pending → claimed → done
- *                    ↘ failed (retryable, with retries_left)
- *                    ↘ error  (permanent failure)
+ *                    ↘ robots_blocked (permanent policy block, no retries)
+ *                    ↘ failed (transient, retryable with retries_left)
+ *                    ↘ error  (permanent failure / retries exhausted)
  *
  * Lease expiry: if a claimed job isn't completed within LEASE_DURATION_MS,
  * it can be reclaimed by another worker (recovery from crashes).
@@ -19,7 +20,13 @@ import type { Db, Collection } from 'mongodb';
 export const COLLECTION_NAME = 'frontier_urls';
 export const LEASE_DURATION_MS = 5 * 60 * 1000; // 5 minutes
 
-export type CrawlStatus = 'pending' | 'claimed' | 'done' | 'failed' | 'error';
+export type CrawlStatus =
+  | 'pending'
+  | 'claimed'
+  | 'done'
+  | 'failed'
+  | 'error'
+  | 'robots_blocked';
 
 export interface FrontierDoc {
   _id?: import('mongodb').ObjectId;

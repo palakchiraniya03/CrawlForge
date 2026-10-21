@@ -20,6 +20,14 @@ import {
 } from './schema.js';
 import { config } from '../config/env.js';
 
+export interface FrontierStatsSummary {
+  /** 'global' indicates collection-wide totals; 'origin' indicates counts filtered by origin. */
+  scope: 'global' | 'origin';
+  origin?: string;
+  counts: Record<CrawlStatus | string, number>;
+  total: number;
+}
+
 export class Frontier {
   private col!: Collection<FrontierDoc>;
 
@@ -84,21 +92,31 @@ export class Frontier {
    * Atomically claim one pending job for processing.
    * Also recovers jobs with expired leases (crashed workers).
    * Returns null if the queue is empty.
+   *
+   * @param origin - Optional origin filter (e.g. "http://localhost:3000").
+   * If provided, only claims jobs matching this origin.
+   * If omitted, claims the shallowest pending job across the entire frontier.
    */
-  async claimNext(): Promise<FrontierDoc | null> {
+  async claimNext(origin?: string): Promise<FrontierDoc | null> {
     const now = new Date();
     const leaseExpiry = new Date(now.getTime() + LEASE_DURATION_MS);
 
     // Try to claim a pending job OR an expired-lease job
+    const query: Record<string, unknown> = {
+      $or: [
+        { status: 'pending' },
+        { status: 'failed', next_retry_at: { $lte: now } },
+        // Recover abandoned claims with expired leases
+        { status: 'claimed', lease_expires_at: { $lt: now } },
+      ],
+    };
+
+    if (origin) {
+      query.origin = origin;
+    }
+
     const result = await this.col.findOneAndUpdate(
-      {
-        $or: [
-          { status: 'pending' },
-          { status: 'failed', next_retry_at: { $lte: now } },
-          // Recover abandoned claims with expired leases
-          { status: 'claimed', lease_expires_at: { $lt: now } },
-        ],
-      },
+      query,
       {
         $set: {
           status: 'claimed',
@@ -127,6 +145,25 @@ export class Frontier {
           last_crawled_at: new Date(),
         },
         $unset: { lease_expires_at: '', next_retry_at: '', error_message: '' },
+      },
+    );
+  }
+
+  /**
+   * Mark a job as permanently blocked by robots.txt.
+   * Unlike transient failures (status='failed'), robots_blocked is not retried.
+   */
+  async markRobotsBlocked(url: string, reason = 'Disallowed by robots.txt'): Promise<void> {
+    const { normalized } = normalizeUrl(url);
+    await this.col.updateOne(
+      { url: normalized },
+      {
+        $set: {
+          status: 'robots_blocked',
+          error_message: reason,
+          last_crawled_at: new Date(),
+        },
+        $unset: { lease_expires_at: '', next_retry_at: '' },
       },
     );
   }
@@ -179,17 +216,41 @@ export class Frontier {
 
   /**
    * Return counts by status for monitoring.
+   *
+   * IMPORTANT: When called without arguments, this returns global collection totals
+   * across ALL origins and crawl runs. To get counts scoped to a specific origin or
+   * crawl run, pass the `origin` parameter (e.g. "http://localhost:3000").
+   *
+   * @param origin - Optional origin filter.
    */
-  async getStats(): Promise<Record<CrawlStatus | string, number>> {
-    const pipeline = [
-      { $group: { _id: '$status', count: { $sum: 1 } } },
-    ];
+  async getStats(origin?: string): Promise<Record<CrawlStatus | string, number>> {
+    const pipeline: import('mongodb').Document[] = [];
+    if (origin) {
+      pipeline.push({ $match: { origin } });
+    }
+    pipeline.push({ $group: { _id: '$status', count: { $sum: 1 } } });
+
     const rows = await this.col.aggregate<{ _id: string; count: number }>(pipeline).toArray();
     const stats: Record<string, number> = {};
     for (const row of rows) {
       stats[row._id] = row.count;
     }
     return stats;
+  }
+
+  /**
+   * Return a detailed stats summary including scope metadata ('global' vs 'origin')
+   * and total document count, preventing ambiguity between global and run-scoped statistics.
+   */
+  async getDetailedStats(origin?: string): Promise<FrontierStatsSummary> {
+    const counts = await this.getStats(origin);
+    const total = Object.values(counts).reduce((acc, c) => acc + c, 0);
+    return {
+      scope: origin ? 'origin' : 'global',
+      origin,
+      counts,
+      total,
+    };
   }
 
   /**

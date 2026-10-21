@@ -94,18 +94,37 @@ describe('CrawlerWorker end-to-end crawl', () => {
     expect(result!.extracted?.title).toBe('Page A');
   });
 
-  it('blocks crawling pages disallowed by robots.txt', async () => {
+  it('blocks crawling pages disallowed by robots.txt and persists robots_blocked', async () => {
     // /secret is in the frontier because it was linked on the home page
     const result = await worker.processNext();
     expect(result).not.toBeNull();
     expect(result!.status).toBe('robots_blocked');
     expect(result!.error).toMatch(/robots\.txt/i);
 
-    // Verify frontier recorded the failure
+    // Verify frontier recorded robots_blocked as a distinct terminal status
+    const blockedDocs = await frontier.listByStatus('robots_blocked');
+    expect(blockedDocs).toHaveLength(1);
+    expect(blockedDocs[0].url).toContain('/secret');
+    expect(blockedDocs[0].status).toBe('robots_blocked');
+    expect(blockedDocs[0].error_message).toMatch(/robots/i);
+
+    // Verify it is NOT recorded as a transient 'failed' job
     const failedDocs = await frontier.listByStatus('failed');
-    const secretDoc = failedDocs.find(d => d.url.includes('/secret'));
-    expect(secretDoc).toBeDefined();
-    expect(secretDoc?.error_message).toMatch(/robots/i);
+    expect(failedDocs).toHaveLength(0);
+
+    // Verify stats report robots_blocked consistently
+    const stats = await frontier.getStats();
+    expect(stats['robots_blocked']).toBe(1);
+    expect(stats['done']).toBe(3);
+    expect(stats['failed']).toBeUndefined();
+
+    // Verify detailed stats distinguish scope
+    const detailed = await frontier.getDetailedStats(fixture.baseUrl);
+    expect(detailed.scope).toBe('origin');
+    expect(detailed.origin).toBe(fixture.baseUrl);
+    expect(detailed.counts['robots_blocked']).toBe(1);
+    expect(detailed.counts['done']).toBe(3);
+    expect(detailed.total).toBe(4);
   });
 
   it('returns null when frontier queue is exhausted', async () => {
