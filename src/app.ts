@@ -1,7 +1,9 @@
 import express, { Request, Response, NextFunction } from 'express';
+import type { Db } from 'mongodb';
 import { getDb } from './db/client.js';
+import { createSearchRouter } from './api/searchRouter.js';
 
-export function createApp() {
+export function createApp(customDb?: Db) {
   const app = express();
   app.use(express.json());
 
@@ -13,7 +15,7 @@ export function createApp() {
   // GET /health/db
   app.get('/health/db', async (_req: Request, res: Response) => {
     try {
-      const db = getDb();
+      const db = customDb ?? getDb();
       const result = await db.command({ ping: 1 });
       if (result.ok === 1) {
         res.json({ status: 'ok', database: db.databaseName, timestamp: new Date().toISOString() });
@@ -27,6 +29,10 @@ export function createApp() {
       });
     }
   });
+
+  // Mount Search and Indexing API router under /api
+  const dbGetter = () => customDb ?? getDb();
+  app.use('/api', createSearchRouter(dbGetter));
 
   // 404 handler
   app.use((_req: Request, res: Response) => {
