@@ -41,9 +41,43 @@ export interface SavePageResult {
   contentHash: string;
 }
 
+export class KeyedMutex {
+  private chains = new Map<string, Promise<unknown>>();
+
+  /**
+   * Run a task exclusively for a specific key.
+   * Tasks for the same key are executed sequentially in strict FIFO order.
+   * Tasks for different keys proceed concurrently.
+   */
+  async runExclusive<T>(key: string, task: () => Promise<T>): Promise<T> {
+    const currentTail = this.chains.get(key) ?? Promise.resolve();
+
+    const taskPromise = currentTail.then(
+      () => task(),
+      () => task(), // run even if previous task rejected
+    );
+
+    const nextTail = taskPromise.then(
+      () => {},
+      () => {},
+    );
+
+    this.chains.set(key, nextTail);
+
+    nextTail.then(() => {
+      if (this.chains.get(key) === nextTail) {
+        this.chains.delete(key);
+      }
+    });
+
+    return taskPromise;
+  }
+}
+
 export class PageStore {
   private pagesCol!: Collection<PageDoc>;
   private versionsCol!: Collection<PageVersionDoc>;
+  private mutex = new KeyedMutex();
 
   constructor(private readonly db: Db) {}
 
@@ -55,10 +89,13 @@ export class PageStore {
 
   /**
    * Save a crawled page.
+   * - Serialized per normalized URL via KeyedMutex to prevent in-process race conditions.
+   * - Uses optimistic concurrency control and duplicate key handling for cross-process safety.
    * - If first crawl: inserts into `pages` (v1) and `page_versions` (v1).
    * - If 304 Not Modified: updates `lastCrawledAt` without altering content or creating a version.
    * - If 200 with unchanged content hash: updates `lastCrawledAt` and validators without creating a version.
    * - If 200 with changed content hash: updates `pages` with incremented version counter and inserts a new `page_versions` record.
+   * - Properly unsets validators (ETag/Last-Modified) if a server drops them on 200 responses.
    */
   async savePage(input: SavePageInput): Promise<SavePageResult> {
     const { normalized, valid } = normalizeUrl(input.url);
@@ -66,6 +103,17 @@ export class PageStore {
       throw new Error(`Invalid URL for page storage: ${input.url}`);
     }
 
+    return this.mutex.runExclusive(normalized, () =>
+      this._savePageInternal(normalized, input),
+    );
+  }
+
+  private async _savePageInternal(
+    normalized: string,
+    input: SavePageInput,
+    attempt = 1,
+  ): Promise<SavePageResult> {
+    const MAX_SAVE_ATTEMPTS = 3;
     const existing = await this.pagesCol.findOne({ url: normalized });
     const now = new Date();
 
@@ -79,6 +127,7 @@ export class PageStore {
         lastCrawledAt: now,
         httpStatus: 304,
       };
+      // RFC 7232: 304 confirms cached validators remain valid unless updated by response
       if (input.etag) updateFields.etag = input.etag;
       if (input.lastModified) updateFields.lastModified = input.lastModified;
 
@@ -118,7 +167,14 @@ export class PageStore {
         lastChangedAt: now,
       };
 
-      await this.pagesCol.insertOne(newPageDoc);
+      try {
+        await this.pagesCol.insertOne(newPageDoc);
+      } catch (err: unknown) {
+        if (isDuplicateKeyError(err) && attempt < MAX_SAVE_ATTEMPTS) {
+          return this._savePageInternal(normalized, input, attempt + 1);
+        }
+        throw err;
+      }
 
       const initialVersionDoc: PageVersionDoc = {
         pageId,
@@ -131,7 +187,36 @@ export class PageStore {
         crawledAt: now,
       };
 
-      await this.versionsCol.insertOne(initialVersionDoc);
+      try {
+        await this.versionsCol.insertOne(initialVersionDoc);
+      } catch (err: unknown) {
+        if (isDuplicateKeyError(err)) {
+          // Verify that existing history record matches intended version and content
+          const existingHistory = await this.versionsCol.findOne({
+            url: normalized,
+            version: 1,
+          });
+          if (existingHistory && existingHistory.contentHash === contentHash) {
+            return {
+              outcome: 'created',
+              pageId,
+              url: normalized,
+              version: 1,
+              isNewVersion: true,
+              contentHash,
+            };
+          }
+          // Content mismatch on duplicate key: rollback inserted page and throw
+          await this.pagesCol.deleteOne({ _id: pageId, version: 1 }).catch(() => {});
+          throw new Error(
+            `Version conflict: page_versions already contains version 1 for ${normalized} with different content`,
+          );
+        }
+
+        // Non-duplicate error: rollback inserted page and rethrow
+        await this.pagesCol.deleteOne({ _id: pageId, version: 1 }).catch(() => {});
+        throw err;
+      }
 
       return {
         outcome: 'created',
@@ -143,19 +228,36 @@ export class PageStore {
       };
     }
 
+    // Existing page: handle validator updates / unsets
+    const setFields: Record<string, unknown> = {
+      lastCrawledAt: now,
+      httpStatus: input.httpStatus,
+      outgoingLinks: input.outgoingLinks,
+      contentType: input.contentType,
+    };
+    const unsetFields: Record<string, string> = {};
+
+    if (input.etag) {
+      setFields.etag = input.etag;
+    } else if (existing.etag) {
+      unsetFields.etag = '';
+    }
+
+    if (input.lastModified) {
+      setFields.lastModified = input.lastModified;
+    } else if (existing.lastModified) {
+      unsetFields.lastModified = '';
+    }
+
     // Existing page: check if extracted content has changed
     if (existing.contentHash === contentHash) {
       // Content hash is identical: no new version created
-      const updateFields: Partial<PageDoc> = {
-        lastCrawledAt: now,
-        httpStatus: input.httpStatus,
-        outgoingLinks: input.outgoingLinks,
-        contentType: input.contentType,
-      };
-      if (input.etag) updateFields.etag = input.etag;
-      if (input.lastModified) updateFields.lastModified = input.lastModified;
+      const updateDoc: Record<string, unknown> = { $set: setFields };
+      if (Object.keys(unsetFields).length > 0) {
+        updateDoc.$unset = unsetFields;
+      }
 
-      await this.pagesCol.updateOne({ _id: existing._id }, { $set: updateFields });
+      await this.pagesCol.updateOne({ _id: existing._id }, updateDoc);
 
       return {
         outcome: 'unchanged',
@@ -170,24 +272,31 @@ export class PageStore {
     // Content hash differs: create next version (v2, v3, ...)
     const nextVersion = existing.version + 1;
 
-    await this.pagesCol.updateOne(
-      { _id: existing._id },
-      {
-        $set: {
-          title: input.title,
-          textContent: input.textContent,
-          outgoingLinks: input.outgoingLinks,
-          httpStatus: input.httpStatus,
-          contentType: input.contentType,
-          contentHash,
-          etag: input.etag,
-          lastModified: input.lastModified,
-          version: nextVersion,
-          lastCrawledAt: now,
-          lastChangedAt: now,
-        },
-      },
+    setFields.title = input.title;
+    setFields.textContent = input.textContent;
+    setFields.contentHash = contentHash;
+    setFields.version = nextVersion;
+    setFields.lastChangedAt = now;
+
+    const updateDoc: Record<string, unknown> = { $set: setFields };
+    if (Object.keys(unsetFields).length > 0) {
+      updateDoc.$unset = unsetFields;
+    }
+
+    // Optimistic concurrency control: atomically match version
+    const updateResult = await this.pagesCol.findOneAndUpdate(
+      { _id: existing._id, version: existing.version },
+      updateDoc,
+      { returnDocument: 'after' },
     );
+
+    if (!updateResult) {
+      // Concurrent write updated the document version first; retry
+      if (attempt < MAX_SAVE_ATTEMPTS) {
+        return this._savePageInternal(normalized, input, attempt + 1);
+      }
+      throw new Error(`Concurrent modification conflict updating URL: ${normalized}`);
+    }
 
     const newVersionDoc: PageVersionDoc = {
       pageId: existing._id!,
@@ -200,7 +309,42 @@ export class PageStore {
       crawledAt: now,
     };
 
-    await this.versionsCol.insertOne(newVersionDoc);
+    try {
+      await this.versionsCol.insertOne(newVersionDoc);
+    } catch (err: unknown) {
+      if (isDuplicateKeyError(err)) {
+        // Verify that existing history record matches intended version and content
+        const existingHistory = await this.versionsCol.findOne({
+          url: normalized,
+          version: nextVersion,
+        });
+        if (existingHistory && existingHistory.contentHash === contentHash) {
+          return {
+            outcome: 'updated',
+            pageId: existing._id!,
+            url: normalized,
+            version: nextVersion,
+            isNewVersion: true,
+            contentHash,
+          };
+        }
+        // Content mismatch on duplicate key: rollback pages document to previous state
+        await this.pagesCol.replaceOne(
+          { _id: existing._id, version: nextVersion },
+          existing,
+        ).catch(() => {});
+        throw new Error(
+          `Version conflict: page_versions already contains version ${nextVersion} for ${normalized} with different content`,
+        );
+      }
+
+      // Non-duplicate error: rollback pages document to previous state and rethrow
+      await this.pagesCol.replaceOne(
+        { _id: existing._id, version: nextVersion },
+        existing,
+      ).catch(() => {});
+      throw err;
+    }
 
     return {
       outcome: 'updated',
@@ -274,4 +418,13 @@ export class PageStore {
     await this.db.collection('pages').drop().catch(() => {});
     await this.db.collection('page_versions').drop().catch(() => {});
   }
+}
+
+function isDuplicateKeyError(err: unknown): boolean {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    'code' in err &&
+    (err as { code: number }).code === 11000
+  );
 }

@@ -273,3 +273,39 @@ describe('Frontier.getStats', () => {
     expect(detailed.total).toBe(2);
   });
 });
+
+describe('Frontier startup recovery', () => {
+  it('automatically recovers expired leases to pending on init() without altering active unexpired leases', async () => {
+    // 1. Add two URLs and claim both
+    await frontier.addUrl('http://localhost:3001/expired', 0);
+    await frontier.addUrl('http://localhost:3001/active', 0);
+
+    const job1 = await frontier.claimNext();
+    const job2 = await frontier.claimNext();
+
+    expect(job1).not.toBeNull();
+    expect(job2).not.toBeNull();
+
+    // 2. Set job1's lease into the past (crashed worker), job2's lease into the future (active worker)
+    const past = new Date(Date.now() - 5000);
+    const future = new Date(Date.now() + 60000);
+
+    const col = db.collection('frontier_urls');
+    await col.updateOne({ url: job1!.url }, { $set: { lease_expires_at: past } });
+    await col.updateOne({ url: job2!.url }, { $set: { lease_expires_at: future } });
+
+    // 3. New frontier instance starts up (simulating application/worker restart)
+    const restartedFrontier = new Frontier(db);
+    await restartedFrontier.init();
+
+    // 4. Verify job1 is now restored to 'pending', while job2 remains 'claimed' with unexpired lease
+    const doc1 = await col.findOne({ url: job1!.url });
+    const doc2 = await col.findOne({ url: job2!.url });
+
+    expect(doc1?.status).toBe('pending');
+    expect(doc1?.lease_expires_at).toBeUndefined();
+
+    expect(doc2?.status).toBe('claimed');
+    expect(doc2?.lease_expires_at).toBeDefined();
+  });
+});

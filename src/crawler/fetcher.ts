@@ -263,8 +263,10 @@ async function attemptFetch(
 
     // Non-redirect response
     const httpStatus = response.status;
-    const etag = response.headers.get('etag') ?? undefined;
-    const lastModified = response.headers.get('last-modified') ?? undefined;
+    const rawEtag = response.headers.get('etag');
+    const etag = rawEtag && rawEtag.trim() ? rawEtag.trim() : undefined;
+    const rawLastModified = response.headers.get('last-modified');
+    const lastModified = rawLastModified && rawLastModified.trim() ? rawLastModified.trim() : undefined;
 
     // Handle 304 Not Modified (conditional GET success)
     if (httpStatus === 304) {

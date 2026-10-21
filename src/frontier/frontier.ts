@@ -35,6 +35,8 @@ export class Frontier {
 
   async init(): Promise<void> {
     this.col = await initFrontierCollection(this.db);
+    // Recover any abandoned or expired claims left from a crashed or killed process on startup
+    await this.recoverPendingWork();
   }
 
   /**
