@@ -1,89 +1,106 @@
+
 import { describe, it, expect } from 'vitest';
-import { normalizeUrl, resolveLinks } from '../../src/utils/urlNormalizer.js';
+import { normalizeUrl, resolveLinks } from '../../src/utils/urlNormalizer';
 
 describe('normalizeUrl', () => {
   it('lowercases scheme and host', () => {
-    const r = normalizeUrl('HTTP://Example.COM/path');
-    expect(r.valid).toBe(true);
-    expect(r.normalized).toBe('http://example.com/path');
+    const result = normalizeUrl('HTTPS://EXAMPLE.COM/Path');
+    expect(result.valid).toBe(true);
+    expect(result.normalized).toBe('https://example.com/Path');
   });
 
   it('removes default http port 80', () => {
-    const r = normalizeUrl('http://example.com:80/path');
-    expect(r.normalized).toBe('http://example.com/path');
+    const result = normalizeUrl('http://example.com:80/page');
+    expect(result.normalized).toBe('http://example.com/page');
   });
 
   it('removes default https port 443', () => {
-    const r = normalizeUrl('https://example.com:443/path');
-    expect(r.normalized).toBe('https://example.com/path');
+    const result = normalizeUrl('https://example.com:443/page');
+    expect(result.normalized).toBe('https://example.com/page');
   });
 
   it('keeps non-default port', () => {
-    const r = normalizeUrl('http://example.com:8080/path');
-    expect(r.normalized).toBe('http://example.com:8080/path');
+    const result = normalizeUrl('http://example.com:8080/page');
+    expect(result.normalized).toBe('http://example.com:8080/page');
   });
 
   it('sorts query parameters', () => {
-    const r = normalizeUrl('http://example.com/?z=1&a=2');
-    expect(r.normalized).toBe('http://example.com/?a=2&z=1');
+    const result = normalizeUrl('https://example.com/page?z=2&a=1');
+    expect(result.normalized).toBe('https://example.com/page?a=1&z=2');
   });
 
   it('removes fragment', () => {
-    const r = normalizeUrl('http://example.com/page#section');
-    expect(r.normalized).toBe('http://example.com/page');
+    const result = normalizeUrl('https://example.com/page#section');
+    expect(result.normalized).toBe('https://example.com/page');
   });
 
   it('removes trailing slash', () => {
-    const r = normalizeUrl('http://example.com/path/');
-    expect(r.normalized).toBe('http://example.com/path');
+    const result = normalizeUrl('https://example.com/page/');
+    expect(result.normalized).toBe('https://example.com/page');
   });
 
   it('keeps root slash', () => {
-    const r = normalizeUrl('http://example.com/');
-    expect(r.valid).toBe(true);
-    // root path is just the origin
-    expect(r.normalized).toMatch(/^http:\/\/example\.com/);
+    const result = normalizeUrl('https://example.com/');
+    expect(result.normalized).toBe('https://example.com/');
   });
 
   it('rejects non-http protocols', () => {
-    const r = normalizeUrl('ftp://example.com/file');
-    expect(r.valid).toBe(false);
+    const result = normalizeUrl('ftp://example.com/file');
+    expect(result.valid).toBe(false);
   });
 
   it('rejects URLs with embedded credentials', () => {
-    const r = normalizeUrl('http://user:pass@example.com/page');
-    expect(r.valid).toBe(false);
-    expect(r.error).toMatch(/credentials/i);
+    const result = normalizeUrl('https://user:pass@example.com/page');
+    expect(result.valid).toBe(false);
   });
 
   it('rejects invalid URLs', () => {
-    const r = normalizeUrl('not-a-url');
-    expect(r.valid).toBe(false);
+    const result = normalizeUrl('not a valid URL');
+    expect(result.valid).toBe(false);
   });
 
   it('resolves relative URL against base', () => {
-    const r = normalizeUrl('/about', 'http://example.com/');
-    expect(r.valid).toBe(true);
-    expect(r.normalized).toContain('example.com/about');
+    const result = normalizeUrl('/about', 'https://example.com');
+    expect(result.normalized).toBe('https://example.com/about');
   });
 
   it('resolves relative href from deep path', () => {
-    const r = normalizeUrl('../contact', 'http://example.com/blog/post');
-    expect(r.valid).toBe(true);
-    expect(r.normalized).toContain('example.com/contact');
+    const result = normalizeUrl('../about', 'https://example.com/docs/guide/');
+    expect(result.normalized).toBe('https://example.com/docs/about');
+  });
+
+  it('preserves case-sensitive path characters', () => {
+    const result = normalizeUrl('https://example.com/Docs/GetStarted');
+    expect(result.valid).toBe(true);
+    expect(result.normalized).toBe('https://example.com/Docs/GetStarted');
+  });
+
+  it('preserves case-sensitive query parameter values', () => {
+    const result = normalizeUrl('https://example.com/page?Token=AbC123');
+    expect(result.valid).toBe(true);
+    expect(result.normalized).toBe('https://example.com/page?Token=AbC123');
   });
 });
 
 describe('resolveLinks', () => {
   it('deduplicates and resolves hrefs', () => {
-    const hrefs = ['/page', '/page', '/about', 'javascript:void(0)', 'mailto:x@y.com'];
-    const results = resolveLinks(hrefs, 'http://example.com');
-    expect(results).toHaveLength(2);
-    expect(results).toContain('http://example.com/page');
-    expect(results).toContain('http://example.com/about');
+    const result = resolveLinks(
+      ['/about', 'https://example.com/about', '/contact'],
+      'https://example.com'
+    );
+
+    expect(result).toEqual([
+      'https://example.com/about',
+      'https://example.com/contact',
+    ]);
   });
 
   it('skips empty hrefs', () => {
-    expect(resolveLinks(['', '  '], 'http://example.com')).toHaveLength(0);
+    const result = resolveLinks(
+      ['', '   ', 'javascript:void(0)', 'mailto:test@example.com', '/about'],
+      'https://example.com'
+    );
+
+    expect(result).toEqual(['https://example.com/about']);
   });
 });

@@ -67,7 +67,10 @@ export function normalizeUrl(rawUrl: string, base?: string): NormalizeResult {
       }
     );
 
-    return { normalized: decoded.toLowerCase().replace(/^(https?:\/\/[^/]+)/, m => m.toLowerCase()), valid: true };
+    return {
+      normalized: decoded.replace(/^(https?:\/\/[^/]+)/i, (match) => match.toLowerCase()),
+      valid: true,
+    };
   } catch (err) {
     return { normalized: '', valid: false, error: err instanceof Error ? err.message : String(err) };
   }

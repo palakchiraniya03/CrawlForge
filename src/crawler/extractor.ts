@@ -1,3 +1,4 @@
+
 /**
  * Page content extractor using Cheerio.
  *
@@ -41,7 +42,16 @@ export function extractContent(html: string, pageUrl: string): ExtractedContent 
     }
   }
 
-  // Remove noise elements before extracting text
+  // Extract and resolve outgoing links BEFORE removing navigation elements
+  const hrefs: string[] = [];
+  $('a[href]').each((_i, el) => {
+    const href = $(el).attr('href');
+    if (href) hrefs.push(href);
+  });
+
+  const outgoingLinks = resolveLinks(hrefs, pageUrl);
+
+  // Remove noise elements before extracting readable text
   $('script, style, noscript, nav, header, footer, aside, [aria-hidden="true"]').remove();
   $('[style*="display:none"], [style*="display: none"], [hidden]').remove();
 
@@ -50,15 +60,6 @@ export function extractContent(html: string, pageUrl: string): ExtractedContent 
     .text()
     .replace(/\s+/g, ' ')
     .trim();
-
-  // Extract and resolve outgoing links
-  const hrefs: string[] = [];
-  $('a[href]').each((_i, el) => {
-    const href = $(el).attr('href');
-    if (href) hrefs.push(href);
-  });
-
-  const outgoingLinks = resolveLinks(hrefs, pageUrl);
 
   return { title, canonicalUrl, textContent, outgoingLinks };
 }

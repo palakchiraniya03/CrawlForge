@@ -1,3 +1,4 @@
+
 /**
  * Unit tests for the HTML content extractor.
  */
@@ -58,6 +59,24 @@ describe('extractContent', () => {
     expect(outgoingLinks).toContain('http://example.com/page-a');
     expect(outgoingLinks).toContain('http://example.com/page-b');
     expect(outgoingLinks).toContain('http://other.com/page');
+  });
+
+  it('extracts links inside navigation and sidebar elements', () => {
+    const html = `<html><body>
+      <nav><a href="/docs/intro">Introduction</a></nav>
+      <aside><a href="/docs/advanced">Advanced Guide</a></aside>
+      <main><a href="/main-content">Main Content</a></main>
+    </body></html>`;
+
+    const { outgoingLinks, textContent } = extractContent(html, BASE);
+
+    expect(outgoingLinks).toContain('http://example.com/docs/intro');
+    expect(outgoingLinks).toContain('http://example.com/docs/advanced');
+    expect(outgoingLinks).toContain('http://example.com/main-content');
+
+    expect(textContent).not.toContain('Introduction');
+    expect(textContent).not.toContain('Advanced Guide');
+    expect(textContent).toContain('Main Content');
   });
 
   it('deduplicates links', () => {
