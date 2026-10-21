@@ -237,3 +237,52 @@ describe('Indexing API — POST /api/index & GET /api/index/stats', () => {
     expect(data.message).toContain('Page not found in storage');
   });
 });
+
+describe('Search API — Milestone 5 Modes & Embeddings', () => {
+  it('validates mode parameter and rejects invalid mode with 400', async () => {
+    const res = await fetch(`${baseUrl}/api/search?q=crawler&mode=vector_unsupported`);
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.status).toBe('error');
+    expect(data.message).toContain('Invalid mode parameter');
+  });
+
+  it('falls back to lexical search with warning when mode=hybrid and provider is unconfigured', async () => {
+    await pageStore.savePage({
+      url: 'http://localhost:3000/hybrid-test',
+      origin: 'http://localhost:3000',
+      title: 'Hybrid Fallback Test',
+      textContent: 'TypeScript safe crawler with frontier.',
+      outgoingLinks: [],
+      httpStatus: 200,
+      contentType: 'text/html',
+    });
+    await indexer.indexAll();
+
+    const res = await fetch(`${baseUrl}/api/search?q=crawler&mode=hybrid`);
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.mode).toBe('hybrid');
+    expect(data.warning).toBeDefined();
+    expect(data.warning).toContain('fell back to lexical BM25');
+    expect(data.results.length).toBeGreaterThan(0);
+  });
+
+  it('returns 503 when mode=semantic and provider is unconfigured', async () => {
+    const res = await fetch(`${baseUrl}/api/search?q=crawler&mode=semantic`);
+    expect(res.status).toBe(503);
+    const data = await res.json();
+    expect(data.status).toBe('error');
+    expect(data.message).toContain('unavailable');
+  });
+
+  it('provides embedding status via GET /api/embeddings/status', async () => {
+    const res = await fetch(`${baseUrl}/api/embeddings/status`);
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.status).toBe('ok');
+    expect(data.provider).toBeDefined();
+    expect(data.counts).toBeDefined();
+    expect(typeof data.counts.totalPages).toBe('number');
+  });
+});

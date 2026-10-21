@@ -2,8 +2,9 @@ import express, { Request, Response, NextFunction } from 'express';
 import type { Db } from 'mongodb';
 import { getDb } from './db/client.js';
 import { createSearchRouter } from './api/searchRouter.js';
+import type { EmbeddingProvider } from './embeddings/types.js';
 
-export function createApp(customDb?: Db) {
+export function createApp(customDb?: Db, customProvider?: EmbeddingProvider) {
   const app = express();
   app.use(express.json());
 
@@ -32,7 +33,7 @@ export function createApp(customDb?: Db) {
 
   // Mount Search and Indexing API router under /api
   const dbGetter = () => customDb ?? getDb();
-  app.use('/api', createSearchRouter(dbGetter));
+  app.use('/api', createSearchRouter(dbGetter, customProvider));
 
   // 404 handler
   app.use((_req: Request, res: Response) => {

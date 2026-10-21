@@ -4,6 +4,8 @@ import { config } from './config/env.js';
 import { Frontier } from './frontier/frontier.js';
 import { PageStore } from './db/pageStore.js';
 import { SearchIndexer } from './search/indexer.js';
+import { EmbeddingService } from './embeddings/embeddingService.js';
+import { createEmbeddingProvider } from './embeddings/providerFactory.js';
 
 async function main() {
   const db = await connectDb();
@@ -16,6 +18,8 @@ async function main() {
   await pageStore.init();
   const searchIndexer = new SearchIndexer(db);
   await searchIndexer.init();
+  const embeddingService = new EmbeddingService(db, createEmbeddingProvider());
+  await embeddingService.init();
 
   const app = createApp(db);
   app.listen(config.port, () => {

@@ -21,4 +21,9 @@ export const config = {
     maxRetries: parseInt(requireEnv('CRAWL_MAX_RETRIES', '3'), 10),
     allowedDomains: requireEnv('ALLOWED_DOMAINS', 'localhost').split(',').map(d => d.trim()).filter(Boolean),
   },
+  embedding: {
+    provider: process.env.EMBEDDING_PROVIDER ?? 'unconfigured',
+    endpoint: process.env.EMBEDDING_ENDPOINT ?? 'http://localhost:11434/api/embeddings',
+    model: process.env.EMBEDDING_MODEL ?? 'all-minilm',
+  },
 } as const;
