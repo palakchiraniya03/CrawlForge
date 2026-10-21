@@ -271,6 +271,27 @@ export class Frontier {
   }
 
   /**
+   * Reset abandoned or expired claims back to 'pending'.
+   * Called on process restart or periodically to recover jobs left in 'claimed' state
+   * by a crashed or killed worker process.
+   *
+   * @param before - Only recover claims whose lease expired before this timestamp (defaults to now).
+   */
+  async recoverPendingWork(before: Date = new Date()): Promise<number> {
+    const result = await this.col.updateMany(
+      {
+        status: 'claimed',
+        lease_expires_at: { $lte: before },
+      },
+      {
+        $set: { status: 'pending' },
+        $unset: { lease_expires_at: '' },
+      },
+    );
+    return result.modifiedCount;
+  }
+
+  /**
    * Forcibly expire all leases (for testing / manual recovery).
    */
   async expireAllLeases(): Promise<number> {

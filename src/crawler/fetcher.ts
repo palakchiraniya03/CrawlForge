@@ -38,6 +38,9 @@ export interface FetchResult {
   error?: string;
   redirectChain: string[];
   attempts: number;
+  etag?: string;
+  lastModified?: string;
+  notModified?: boolean;
 }
 
 export interface FetchOptions {
@@ -46,6 +49,8 @@ export interface FetchOptions {
   userAgent?: string;
   allowedContentTypes?: string[];
   acceptHeader?: string;
+  etag?: string;
+  lastModified?: string;
 }
 
 /**
@@ -61,6 +66,8 @@ export async function safeFetch(
   const userAgent = options.userAgent ?? 'CrawlForge/1.0 (+https://github.com/crawlforge)';
   const allowedContentTypes = options.allowedContentTypes;
   const acceptHeader = options.acceptHeader;
+  const etag = options.etag;
+  const lastModified = options.lastModified;
 
   const originalUrl = url;
   let attempts = 0;
@@ -79,6 +86,8 @@ export async function safeFetch(
       userAgent,
       allowedContentTypes,
       acceptHeader,
+      etag,
+      lastModified,
     });
 
     if (result.status === 'ok' || result.status === 'ssrf_blocked' || result.status === 'unsupported_content_type' || result.status === 'redirect_limit') {
@@ -128,6 +137,8 @@ async function attemptFetch(
     userAgent: string;
     allowedContentTypes?: string[];
     acceptHeader?: string;
+    etag?: string;
+    lastModified?: string;
   },
 ): Promise<FetchResult> {
   const redirectChain: string[] = [];
@@ -175,6 +186,8 @@ async function attemptFetch(
           'User-Agent': options.userAgent,
           'Accept': accept,
           'Accept-Language': 'en',
+          ...(options.etag ? { 'If-None-Match': options.etag } : {}),
+          ...(options.lastModified ? { 'If-Modified-Since': options.lastModified } : {}),
         },
       });
     } catch (err) {
@@ -201,8 +214,8 @@ async function attemptFetch(
       clearTimeout(timer);
     }
 
-    // Handle redirects
-    if (response.status >= 300 && response.status < 400) {
+    // Handle redirects (exclude 304 Not Modified, which is not a redirect)
+    if (response.status >= 300 && response.status < 400 && response.status !== 304) {
       const location = response.headers.get('location');
       if (!location) {
         return {
@@ -250,6 +263,23 @@ async function attemptFetch(
 
     // Non-redirect response
     const httpStatus = response.status;
+    const etag = response.headers.get('etag') ?? undefined;
+    const lastModified = response.headers.get('last-modified') ?? undefined;
+
+    // Handle 304 Not Modified (conditional GET success)
+    if (httpStatus === 304) {
+      return {
+        status: 'ok',
+        url: currentUrl,
+        originalUrl: startUrl,
+        httpStatus: 304,
+        notModified: true,
+        etag,
+        lastModified,
+        redirectChain,
+        attempts: 1,
+      };
+    }
 
     if (httpStatus < 200 || httpStatus >= 300) {
       return {
@@ -293,6 +323,9 @@ async function attemptFetch(
       httpStatus,
       contentType: rawContentType,
       body,
+      etag,
+      lastModified,
+      notModified: false,
       redirectChain,
       attempts: 1,
     };
